@@ -1,5 +1,6 @@
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import islice
 from typing import Any, Dict, List, Optional
 
@@ -23,7 +24,9 @@ LOG = logging.getLogger("exodus-gw")
     predicate=lambda response: response["UnprocessedItems"],
     max_tries=Settings().write_max_tries,
 )
-def batch_write(env_obj: Environment, request: Dict[str, Any]):
+def batch_write(
+    env_obj: Environment, request: Dict[str, Any], ddb_session=None
+):
     """Wrapper for batch_write_item with retries and item count validation.
 
     Item limit of 25 is, at this time, imposed by AWS's boto3 library.
@@ -35,8 +38,12 @@ def batch_write(env_obj: Environment, request: Dict[str, Any]):
         LOG.error("Cannot process more than 25 items per request")
         raise ValueError("Request contains too many items (%s)" % item_count)
 
-    with ddb_client(profile=env_obj.aws_profile) as ddb:
-        response = ddb.batch_write_item(RequestItems=request)
+    # Reuse an existing DynamoDB session when possible
+    if ddb_session:
+        response = ddb_session.batch_write_item(RequestItems=request)
+    else:
+        with ddb_client(profile=env_obj.aws_profile) as ddb:
+            response = ddb.batch_write_item(RequestItems=request)
 
     return response
 
@@ -120,31 +127,38 @@ def write_batches(
         iter(lambda: tuple(islice(it, settings.write_batch_size)), ())
     )
     unprocessed_items = []
+    futures = []
     definitions = query_definitions(env_obj, from_date)
 
-    for batch in batches:
-        try:
-            request = create_request(
-                env_obj.table, list(batch), from_date, definitions, delete
-            )
-            response = batch_write(env_obj, request)
-        except Exception:
-            LOG.exception(
-                "Exception while %s %s items on table '%s'",
-                ("deleting" if delete else "writing"),
-                len(batch),
-                env_obj.table,
-            )
-            raise
+    with ThreadPoolExecutor(
+        max_workers=Settings().write_max_workers
+    ) as executor:
+        with ddb_client(profile=env_obj.aws_profile) as ddb:
+            for batch in batches:
+                request = create_request(
+                    env_obj.table, list(batch), from_date, definitions, delete
+                )
+                futures.append(
+                    executor.submit(batch_write, env_obj, request, ddb)
+                )
+            for future in as_completed(futures):
+                try:
+                    response = future.result()
+                except Exception:
+                    LOG.exception(
+                        "Exception while %s items on table '%s'",
+                        ("deleting" if delete else "writing"),
+                        env_obj.table,
+                    )
+                    raise
+                # Raise immediately for put requests.
+                # Collect unprocessed items for delete requests and resume deleting.
+                if response["UnprocessedItems"]:
+                    if delete:
+                        unprocessed_items.append(response["UnprocessedItems"])
+                        continue
 
-        # Raise immediately for put requests.
-        # Collect unprocessed items for delete requests and resume deleting.
-        if response["UnprocessedItems"]:
-            if delete:
-                unprocessed_items.append(response["UnprocessedItems"])
-                continue
-
-            raise RuntimeError("One or more writes were unsuccessful")
+                    raise RuntimeError("One or more writes were unsuccessful")
 
     if unprocessed_items:
         LOG.error(

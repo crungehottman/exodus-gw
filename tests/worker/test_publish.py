@@ -20,7 +20,7 @@ def _task(publish_id):
 
 @mock.patch("exodus_gw.worker.publish.AutoindexEnricher.run")
 @mock.patch("exodus_gw.worker.publish.CurrentMessage.get_current_message")
-@mock.patch("exodus_gw.worker.publish.write_batches")
+@mock.patch("exodus_gw.worker.publish.DynamoDB.write_batches")
 def test_commit(
     mock_write_batches, mock_get_message, mock_autoindex_run, fake_publish, db
 ):
@@ -51,8 +51,8 @@ def test_commit(
     # It should've called write_batches for items and entry point items.
     mock_write_batches.assert_has_calls(
         calls=[
-            mock.call("test", mock.ANY, NOW_UTC),
-            mock.call("test", mock.ANY, NOW_UTC),
+            mock.call(mock.ANY, delete=False),
+            mock.call(mock.ANY, delete=False),
         ]
     )
 
@@ -95,7 +95,7 @@ def test_commit_expired_task(mock_get_message, fake_publish, db, caplog):
 
 
 @mock.patch("exodus_gw.worker.publish.CurrentMessage.get_current_message")
-@mock.patch("exodus_gw.worker.publish.write_batches")
+@mock.patch("exodus_gw.worker.publish.DynamoDB.write_batches")
 def test_commit_write_items_fail(
     mock_write_batches, mock_get_message, fake_publish, db, caplog
 ):
@@ -119,8 +119,8 @@ def test_commit_write_items_fail(
     # It should've failed write_batches and recalled to roll back.
     mock_write_batches.assert_has_calls(
         calls=[
-            mock.call("test", mock.ANY, NOW_UTC),
-            mock.call("test", mock.ANY, NOW_UTC, delete=True),
+            mock.call(mock.ANY, delete=False),
+            mock.call(mock.ANY, delete=True),
         ],
         any_order=False,
     )
@@ -139,7 +139,7 @@ def test_commit_write_items_fail(
 
 
 @mock.patch("exodus_gw.worker.publish.CurrentMessage.get_current_message")
-@mock.patch("exodus_gw.worker.publish.write_batches")
+@mock.patch("exodus_gw.worker.publish.DynamoDB.write_batches")
 def test_commit_write_entry_point_items_fail(
     mock_write_batches, mock_get_message, fake_publish, db, caplog
 ):
@@ -165,9 +165,9 @@ def test_commit_write_entry_point_items_fail(
     # and then deletion of written items.
     mock_write_batches.assert_has_calls(
         calls=[
-            mock.call("test", mock.ANY, NOW_UTC),
-            mock.call("test", mock.ANY, NOW_UTC),
-            mock.call("test", mock.ANY, NOW_UTC, delete=True),
+            mock.call(mock.ANY, delete=False),
+            mock.call(mock.ANY, delete=False),
+            mock.call(mock.ANY, delete=True),
         ],
         any_order=False,
     )
@@ -182,7 +182,7 @@ def test_commit_write_entry_point_items_fail(
 
 
 @mock.patch("exodus_gw.worker.publish.CurrentMessage.get_current_message")
-@mock.patch("exodus_gw.worker.publish.write_batches")
+@mock.patch("exodus_gw.worker.publish.DynamoDB.write_batches")
 def test_commit_completed_task(
     mock_write_batches, mock_get_message, db, caplog
 ):
@@ -207,7 +207,7 @@ def test_commit_completed_task(
 
 
 @mock.patch("exodus_gw.worker.publish.CurrentMessage.get_current_message")
-@mock.patch("exodus_gw.worker.publish.write_batches")
+@mock.patch("exodus_gw.worker.publish.DynamoDB.write_batches")
 def test_commit_completed_publish(
     mock_write_batches, mock_get_message, fake_publish, db, caplog
 ):
@@ -236,7 +236,7 @@ def test_commit_completed_publish(
 
 
 @mock.patch("exodus_gw.worker.publish.CurrentMessage.get_current_message")
-@mock.patch("exodus_gw.worker.publish.write_batches")
+@mock.patch("exodus_gw.worker.publish.DynamoDB.write_batches")
 def test_commit_empty_publish(
     mock_write_batches, mock_get_message, fake_publish, db, caplog
 ):

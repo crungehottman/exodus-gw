@@ -23,7 +23,7 @@ LOG = logging.getLogger("exodus-gw")
     predicate=lambda response: response["UnprocessedItems"],
     max_tries=Settings().write_max_tries,
 )
-def batch_write(env_obj: Environment, request: Dict[str, Any]):
+def batch_write(env_obj: Environment, request: Dict[str, Any], ddb):
     """Wrapper for batch_write_item with retries and item count validation.
 
     Item limit of 25 is, at this time, imposed by AWS's boto3 library.
@@ -35,32 +35,30 @@ def batch_write(env_obj: Environment, request: Dict[str, Any]):
         LOG.error("Cannot process more than 25 items per request")
         raise ValueError("Request contains too many items (%s)" % item_count)
 
-    with ddb_client(profile=env_obj.aws_profile) as ddb:
-        response = ddb.batch_write_item(RequestItems=request)
+    response = ddb.batch_write_item(RequestItems=request)
 
     return response
 
 
-def query_definitions(env_obj: Environment, from_date: str):
+def query_definitions(env_obj: Environment, from_date: str, ddb):
     out: Dict[str, Any] = {}
 
     table = env_obj.config_table
     aws_profile = env_obj.aws_profile
 
-    with ddb_client(profile=aws_profile) as ddb:
-        query_result = ddb.query(
-            TableName=table,
-            Limit=1,
-            ScanIndexForward=False,
-            KeyConditionExpression="config_id = :id and from_date <= :d",
-            ExpressionAttributeValues={
-                ":id": {"S": "exodus-config"},
-                ":d": {"S": from_date},
-            },
-        )
-        if query_result["Items"]:
-            item = query_result["Items"][0]
-            out = json.loads(item["config"]["S"])
+    query_result = ddb.query(
+        TableName=table,
+        Limit=1,
+        ScanIndexForward=False,
+        KeyConditionExpression="config_id = :id and from_date <= :d",
+        ExpressionAttributeValues={
+            ":id": {"S": "exodus-config"},
+            ":d": {"S": from_date},
+        },
+    )
+    if query_result["Items"]:
+        item = query_result["Items"][0]
+        out = json.loads(item["config"]["S"])
     return out
 
 
@@ -108,7 +106,12 @@ def create_request(
 
 
 def write_batches(
-    env: str, items: List[models.Item], from_date: str, delete: bool = False
+    env: str,
+    items: List[models.Item],
+    from_date: str,
+    ddb,
+    definitions: Dict[str, List[Any]],
+    delete: bool = False,
 ):
     """Submit batches of given items for writing via batch_write."""
 
@@ -120,14 +123,13 @@ def write_batches(
         iter(lambda: tuple(islice(it, settings.write_batch_size)), ())
     )
     unprocessed_items = []
-    definitions = query_definitions(env_obj, from_date)
 
     for batch in batches:
         try:
             request = create_request(
                 env_obj.table, list(batch), from_date, definitions, delete
             )
-            response = batch_write(env_obj, request)
+            response = batch_write(env_obj, request, ddb)
         except Exception:
             LOG.exception(
                 "Exception while %s %s items on table '%s'",
